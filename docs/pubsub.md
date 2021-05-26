@@ -11,7 +11,7 @@ name: 'service_name'
 hub: #Optional
   host: 'http://hub:8080' #Optional
 messages:
-  host: 'amqp://localhost'
+  host: 'amqp://localhost' #May be an array of string urls or url objects, the one with the shortest ping is chosen
   input: 'service_in' #Optional default value is `${name}_in`
   output: 'service_out' #Optional default value is `${name}_out`
   concurrency: 10 #Optional default value is 10
@@ -22,6 +22,9 @@ storage:
 retrySchedule: [ 1000, 6000 , 60000 ] #Optional retries frequency   
 ```
 
+# Implementation Notes
+Quadro uses a connection manager to ensure the underlying AMQP connection is re-established automatically in the event of a connection failure. To do this, there is an internal queue within the connection manager which holds messages until they can be sent to the server. To prevent overflowing this queue (and to ensure backpressure is felt) you should always await `publish` calls which will not resolve until the message has been sent successfully and acknowledged by the server.
+
 # API
 
 ## .publish(messageType, messageContent)
@@ -29,7 +32,7 @@ publishes a message to rabbitmq
 
 ## Receive Message
 
-To recieve messages add a handler class that implements handle method to the handler folder with the name `${messageType}.js`
+To receive messages add a handler class that implements handle method to the handler folder with the name `${messageType}.js`
 
 Quadro will automatically picks the handler on startup and registers it. It will receive all the messages from the input queue and routes the message to appropriate handler based on messageType
 

@@ -7,7 +7,7 @@ module.exports = class RabbitMqMessageAdapter {
     this.messageProcessor = messageProcessor
   }
 
-  async initialize(retry = false) {
+  async initialize() {
     // If consumer configs are not present then don't initialize it
     let serviceName = this.config.get('service.name')
     let disableConsumer = this.config.get('service.consumer.disable', false)
@@ -16,7 +16,7 @@ module.exports = class RabbitMqMessageAdapter {
     }
 
     // Get the channel
-    let channel = new RabbitMqChannel(this.config.get('service.messages.host'), this.config.get('service.messages.retryDelay', 5000))
+    let channel = new RabbitMqChannel(this.config.get('service.messages.host'))
     await channel.initialize()
 
     // Get the queue name and concurrency

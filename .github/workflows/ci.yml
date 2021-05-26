@@ -42,4 +42,3 @@ jobs:
         TERM: dumb
       with:
         coverageCommand: npm test
-        debug: true

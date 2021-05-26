@@ -1,7 +1,7 @@
 const RabbitMqChannel = require('./pubsub/rabbitmq_channel')
 
 module.exports = class Pubsub {
-  constructor(log, request, config, prometheus, hubStats = 'pubsub:hubStats') {
+  constructor(log, request, config, prometheus) {
     this.log = log
     this.request = request
     this.config = config
@@ -17,13 +17,11 @@ module.exports = class Pubsub {
         labelNames: ['messageType']
       })
     }
-    this.hubStats = hubStats
-    this.retryDelay = this.config.get('service.messages.retryDelay', 5000)
   }
 
-  async initialize(retry = false) {
+  async initialize() {
     if (this.config.get('service.messages.host')) {
-      this.rabbitmqChannel = new RabbitMqChannel(this.config.get('service.messages.host'), this.config.get('service.messages.retryDelay', 5000))
+      this.rabbitmqChannel = new RabbitMqChannel(this.config.get('service.messages.host'))
       return this.rabbitmqChannel.initialize()
     }
   }

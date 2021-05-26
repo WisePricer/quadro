@@ -1,119 +1,89 @@
-const amqp = require('amqplib')
-Q.Errors.declare('PubsubConsomerAlreadyStartedError', 'One Consumer already started. No new consumer can be started again')
+const amqp = require('../../lib/amqp')
+
+Q.Errors.declare('PubsubConsumerAlreadyStartedError', 'One Consumer already started. No new consumer can be started again')
 
 module.exports = class RabbitMqChannel {
-  constructor(host, retryDelay) {
+  constructor(host) {
     this.host = host
-    this.retryDelay = retryDelay
     this.hostname = require('os').hostname()
     this.serviceName = Q.config.get('service.name', '[unknown]')
   }
 
-  async initialize(retry = false) {
-    try {
-      this.connection = await amqp.connect(this.host)
-
-      // On connection close retry to initialize after few minutes
-      this.connection.on('close', async (err) => {
-        Q.log.info({err}, `RabbitMQ connection closed. Retrying to connect after ${this.retryDelay}ms`)
-        await this.handleError()
-      })
-
-      // Get the channel
-      this.channel = await this.connection.createChannel()
-      // If channel gets closed adruptly then retry to connect again
-      this.channel.on('error', async (err) => {
-        Q.log.error({err}, `There was an error in rabbitmq connection. Retrying to connect after ${this.retryDelay}ms`)
-        await this.handleError()
-      })
-    } catch (err) {
-      if (retry) {
-        Q.log.error({err}, `Error while connecting to rabbit mq. Retrying to connect after ${this.retryDelay}ms`)
-        this.handleError()
-      } else {
-        throw err
-      }
-    }
+  async initialize() {
+    this.connection = await amqp.connect(this.host)
+    this.connection.on('connect', () => Q.log.info('Connected to amqp server'))
+    this.connection.on('disconnect', err => Q.log.warn('Disconnected from amqp server', err))
+    this.connection.on('close', () => Q.log.info('AMQP connection closed'))
+    this.channel = this.connection.createChannel()
   }
 
+  /**
+   * Publish a message to an exchange
+   * @param {string} messageType (in this case also the exchange)
+   * @param {object} message JSON serializable message content
+   * @returns {Promise<true>}
+   */
   async publish(messageType, message) {
-    const messageAccepted = this.channel.publish(messageType, '',
-      Buffer.from(JSON.stringify(message)), { persistent: true })
-
-    if (messageAccepted === false) {
-      Q.log.metric('quadro_rabbit_await_drain', {
-        messageType,
-        hostname: this.hostname,
-        service: this.serviceName
-      }, { count: 1 })
-      const waitStart = Date.now()
-      await new Promise(resolve => this.channel.once('drain', resolve))
-      Q.log.metric('quadro_rabbit_await_drain_time', {
-        messageType,
-        hostname: this.hostname,
-        service: this.serviceName
-      }, { sum: Date.now() - waitStart })
-    }
-
-    return true
+    const msg = Buffer.from(JSON.stringify(message))
+    await this.channel.publish(messageType, '', msg, { persistent: true })
+    return true // legacy support
   }
 
+  /**
+   * Start listening to messages and register a listener.
+   * @param {string} queueName Queue to listen to
+   * @param {number} concurrency AMQP `prefetch` setting
+   * @param {(Buffer) => Promise<*>} messageHandler
+   * @returns {Promise<void>}
+   */
   async startConsumer(queueName, concurrency, messageHandler) {
-    if (!this.queueName) {
-      this.queueName = queueName
-      this.concurrency = concurrency
-      this.messageHandler = messageHandler
-      return this._startConsumerInternal()
-    } else {
-      throw new Q.Errors.PubsubConsomerAlreadyStartedError({existingQueue: this.queueName, newQueue: queueName})
+    if (this.queueName) {
+      throw new Q.Errors.PubsubConsumerAlreadyStartedError({
+        existingQueue: this.queueName,
+        newQueue: queueName
+      })
     }
-  }
 
-  async _startConsumerInternal() {
+    this.queueName = queueName
+    this.concurrency = concurrency
+    this.messageHandler = messageHandler
+
     if (!this.queueName) return
-    // Make sure queue exists
-    await this.channel.assertQueue(this.queueName)
+    await this.channel.addSetup(channel => Promise.all([
+      // Make sure queue exists
+      channel.assertQueue(this.queueName),
+      // Set concurrency
+      channel.prefetch(this.concurrency),
+      // Start the consumer
+      channel.consume(this.queueName, this.onMessage.bind(this))
+    ]))
 
-    // Set concurrency
-    await this.channel.prefetch(this.concurrency)
-
-    // start the consumer
-    await this.channel.consume(this.queueName, async (message) => {
-      // Message would be null if the connection is disconnected or channel is closed
-      if (!message) {
-        Q.log.error(`RabbitMQ channel polled a undefined message. Most likely connection is disconnected or channel is closed. Retrying to connect after ${this.retryDelay}ms`)
-        await this.handleError()
-        return
-      }
-      try {
-        // Process message
-        await this.messageHandler(message)
-        // Acknowledge message. General error should be taken care by handler
-        // and use mongo to schedule event
-        await this.channel.ack(message)
-      } catch (err) {
-        // Unacknowledge only in case there is unhandled message
-        await this.channel.nack(message)
-      }
-    })
+    await this.channel.waitForConnection()
+    Q.log.info(`Listening to ${this.queueName}`)
   }
 
-  async handleError() {
-    await this.closeQuitely(this.channel)
-    await this.closeQuitely(this.connection)
-    setTimeout(async () => {
-      await this.initialize(true)
-      await this._startConsumerInternal()
-    }, this.retryDelay)
-  }
-
-  async closeQuitely(closeable) {
-    if (closeable) {
-      try {
-        await closeable.close()
-      } catch (err) {
-        Q.log.error('Error while closing channel/connection')
-      }
+  /**
+   * Called when a new message is received before calling the registered message handler.
+   * @param {Buffer?} message
+   * @returns {Promise<void>}
+   */
+  async onMessage(message) {
+    // Message would be null if the connection is disconnected or channel is closed
+    if (!message) {
+      Q.log.error('RabbitMQ channel polled a undefined message.')
+      // (only known case for this is if a queue is deleted and then recreated)
+      await this.connection.forceReconnect()
+      return
     }
+    // Process message
+    try {
+      await this.messageHandler(message)
+    } catch (err) {
+      Q.log.error('Message handler threw an error!!!', err)
+      // this should never happen because it would mean there is an error in the hub message
+      // processor itself; if that happens a fix to quadro is needed.
+      await this.channel.nack(message)
+    }
+    await this.channel.ack(message)
   }
 }

@@ -1,6 +1,5 @@
 name: 'service'
 messages:
   host: 'amqp://localhost'
-  retryDelay: 100
 storage:
   host: 'mongodb://localhost:27017/hub'

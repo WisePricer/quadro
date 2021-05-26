@@ -5,10 +5,9 @@ const MINUTE = 60 * SECOND
 const HOUR = 60 * MINUTE
 
 module.exports = class HubMessageProcessor {
-  constructor(log, config, hubStats = 'pubsub:hubStats', prometheus, mongoConnectionFactory, handlers = 'pubsub:handlersList') {
+  constructor(log, config, prometheus, mongoConnectionFactory, handlers = 'pubsub:handlersList') {
     this.log = log
     this.config = config
-    this.hubStats = hubStats
     this.metrics = {
       responseTime: new prometheus.Histogram({
         name: `${prometheus.prefix}rabbitmq_response_time`,
@@ -113,7 +112,7 @@ module.exports = class HubMessageProcessor {
       const timer = this.metrics.responseTime.startTimer({ messageType })
       await handler.handle(messageContext)
       timer()
-      Q.log.debug({ messageType, parsedMessage }, 'Message received')
+      Q.log.trace({ messageType, parsedMessage }, 'Message received')
       // reschdule message if it failed
       if (messageContext.isFailed()) {
         let data = { messageType, statusCode: messageContext.getStatusCode() }
@@ -122,7 +121,7 @@ module.exports = class HubMessageProcessor {
         return this.rescheduleMessage(messageContext)
       } else if (messageContext.shouldRedeliver()) {
         let data = { messageType, retryAfterSec: messageContext.getRetryAfterSec() }
-        Q.log.debug(data, 'Handler asked for message re-delivery')
+        Q.log.trace(data, 'Handler asked for message re-delivery')
 
         return this.scheduleMessage(messageContext)
       }
