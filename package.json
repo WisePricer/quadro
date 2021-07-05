@@ -50,7 +50,7 @@
     "koa-router": "^9.4.0",
     "lodash": "^4.17.20",
     "minimist": "^1.2.5",
-    "mocha": "^7.1.1",
+    "mocha": "^9.0.2",
     "moment": "^2.27.0",
     "mongodb": "^3.5.8",
     "mongodb-uri": "^0.9.7",
